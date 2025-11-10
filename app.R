@@ -6,7 +6,6 @@ library(ggplot2)
 library(cowplot)
 library(plotly)
 library(R.utils)
-library(ggh4x)
 source("code/analysis_variables.R")
 source("code/barplot_functions.R")
 
@@ -18,8 +17,8 @@ geneExplorerUI <- function(id) {
     sidebarLayout(
         sidebarPanel(
             selectInput(ns("tissue"), "Tissue", choices = c("colon", "blood", "lung"), selected = "colon"),
-            selectInput(ns("gene_name"), "Gene", choices = c("KRAS", "TP53")),
-            checkboxInput(ns("exposed_conditions"), "Include exposed tissues", value = FALSE),
+            selectInput(ns("gene_name"), "Gene", choices = c("TP53", "KRAS")),
+            checkboxInput(ns("exposed_conditions"), "Include exposed conditions", value = FALSE),
             actionButton(ns("run"), "Compute", class = "btn-primary")
         ),
         mainPanel(
@@ -47,7 +46,7 @@ geneExplorerServer <- function(id) {
                                fread(paste0("processed_data/",  x, "_mut_ratios.tsv.gz")))
 
         names(ratios_list) = names(expected_rates_list) = names(metadata_list) = tissues
-        tissue_genes = lapply(boostDM_list, \(x) x[["gene_name"]] |> unique() )
+        tissue_genes = lapply(boostDM_list, \(x) x[["gene_name"]] |> unique())
 
         plots <- eventReactive(input$run, {
 
@@ -55,8 +54,9 @@ geneExplorerServer <- function(id) {
             exposed_conditions <- input$exposed_conditions
 
             observe({
-                choices <- tissue_genes[[select_tissue]]
-                updateSelectInput(session, "gene_name", choices = choices, selected = choices[1])
+                select_tissue = input$tissue
+                choices = tissue_genes[[select_tissue]]
+                updateSelectInput(inputId = "gene_name", choices = choices, selected = choices[1])
             })
 
             select_gene <- input$gene_name
@@ -112,8 +112,8 @@ sitexplorerUI <- function(id) {
         sidebarPanel(
             selectInput(ns("tissue"), "Tissue", choices = c("colon", "blood", "lung"), selected = "colon"),
             selectInput(ns("gene_name"), "Gene", choices = c("KRAS", "TP53")),
-            checkboxInput(ns("exposed_conditions"), "Include exposed tissues", value = FALSE),
-            checkboxInput(ns("split_by_driver"), "Split cells by driver", value = FALSE),
+            selectInput(ns("condition"), "Condition", choices = c("normal", "IBD", "POLD1", "POLE"), selected = "normal"),
+            checkboxInput(ns("split_by_driver"), "Split results by driver", value = FALSE),
             actionButton(ns("run"), "Compute", class = "btn-primary")
         ),
         mainPanel(
@@ -141,34 +141,38 @@ sitexplorerServer <- function(id) {
 
         names(ratios_list) = names(expected_rates_list) = names(metadata_list) = tissues
         tissue_genes = lapply(boostDM_list, \(x) x[["gene_name"]] |> unique())
+        metadata = rbindlist(metadata_list, idcol = "tissue", use.names = TRUE)
+        ratios = rbindlist(ratios_list, idcol = "tissue")
 
         expected_rates <- rbindlist(expected_rates_list, idcol = "tissue", use.names = TRUE) |>
             select(-coverage) |>
             left_join(metadata |> select(-coverage, -sensitivity))
 
-        metadata = rbindlist(metadata_list, idcol = "tissue", use.names = TRUE)
-        ratios = rbindlist(ratios_list, idcol = "tissue")
 
         plots <- eventReactive(input$run, {
 
-            select_tissue <- input$tissue
-            exposed_conditions <- input$exposed_conditions
-
             observe({
-                choices <- tissue_genes[[select_tissue]]
-                updateSelectInput(session, "gene_name", choices = choices, selected = choices[1])
+                select_tissue = input$tissue
+                choices = unique(metadata[tissue == select_tissue][["category"]])
+                updateSelectInput(session = session, inputId = "condition", choices = choices, selected = choices[1])
             })
 
+
+            observe({
+                select_tissue = input$tissue
+                choices = tissue_genes[[select_tissue]]
+                updateSelectInput(session = session, inputId = "gene_name", choices = choices, selected = choices[1])
+            })
+
+
+            condition <- input$condition
             select_gene <- input$gene_name
             cancer_bDM <- boostDM_list[[select_tissue]]
+            category_select = input$condition
 
-
-        # check if can be made faster using data.table
-        boostDM_list[[select_tissue]] = boostDM_list[[select_tissue]] |>
-                filter(driver %in% c(TRUE, FALSE))
 
         barplot_mutrisk = make_gene_barplot(boostdm = boostDM_list[[select_tissue]], ratios = ratios, tissue_select = select_tissue,
-                              gene_of_interest = select_gene, tissue_name = select_tissue, category_select = "normal", lollipop_dots = TRUE)
+                              gene_of_interest = select_gene, tissue_name = select_tissue, category_select = category_select, lollipop_dots = TRUE)
 
         if (input$split_by_driver == TRUE ){
             barplot_mutrisk = barplot_mutrisk +
@@ -189,31 +193,12 @@ sitexplorerServer <- function(id) {
     })
 }
 
-# --------------------
-# Tab 2 Module (template)
-# --------------------
-tab2UI <- function(id) {
-    ns <- NS(id)
-    tagList(
-        h3("Tab 2 Example"),
-        sliderInput(ns("slider"), "Select a value:", min = 0, max = 50, value = 25),
-        textOutput(ns("slider_val"))
-    )
-}
-
-tab2Server <- function(id) {
-    moduleServer(id, function(input, output, session) {
-        output$slider_val <- renderText({
-            paste("Slider value is:", input$slider)
-        })
-    })
-}
 
 # --------------------
 # UI
 # --------------------
 ui <- navbarPage(
-    "MutRisk Explorer",
+    title = "MutRisk Explorer",
     tabPanel("Mutated cells/gene during aging", geneExplorerUI("Mutated cells/gene during aging")),
     tabPanel("Mutated cells/position across genes", sitexplorerUI("Mutated cells/position across genes")),
     tabPanel("About", h3("About"),
@@ -234,3 +219,4 @@ server <- function(input, output, session) {
 # Launch App
 # --------------------
 shinyApp(ui, server)
+

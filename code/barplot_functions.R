@@ -91,7 +91,8 @@ make_gene_barplot = function(boostdm, ratios, gene_of_interest,
   } else { x_label = "AA position"}
 
   expected_gene_muts_label = left_join(expected_gene_muts, mutrisk:::triplet_match_substmodel)
-
+  expected_gene_muts_label = expected_gene_muts_label |>
+    filter(!is.na(driver))
   # way to make the plot extend both upper and lower axes
   pl = ggplot(expected_gene_muts_label,
               aes(x = position, y = mle)) +
