@@ -6,7 +6,9 @@ library(ggplot2)
 library(cowplot)
 library(plotly)
 library(R.utils)
+library(ggh4x)
 source("code/analysis_variables.R")
+source("code/barplot_functions.R")
 
 # --------------------
 # Gene Explorer Module
@@ -16,7 +18,7 @@ geneExplorerUI <- function(id) {
     sidebarLayout(
         sidebarPanel(
             selectInput(ns("tissue"), "Tissue", choices = c("colon", "blood", "lung"), selected = "colon"),
-            selectInput(ns("gene_name"), "Gene", choices = c("APC", "KRAS")),
+            selectInput(ns("gene_name"), "Gene", choices = c("KRAS", "TP53")),
             checkboxInput(ns("exposed_conditions"), "Include exposed tissues", value = FALSE),
             actionButton(ns("run"), "Compute", class = "btn-primary")
         ),
@@ -106,13 +108,19 @@ geneExplorerServer <- function(id) {
 # --------------------
 sitexplorerUI <- function(id) {
     ns <- NS(id)
-    tagList(
-        h3("Tab 1 Example"),
-        numericInput(ns("num"), "Choose a number:", value = 10, min = 1, max = 100),
-        textOutput(ns("result"))
+    sidebarLayout(
+        sidebarPanel(
+            selectInput(ns("tissue"), "Tissue", choices = c("colon", "blood", "lung"), selected = "colon"),
+            selectInput(ns("gene_name"), "Gene", choices = c("KRAS", "TP53")),
+            checkboxInput(ns("exposed_conditions"), "Include exposed tissues", value = FALSE),
+            checkboxInput(ns("split_by_driver"), "Split cells by driver", value = FALSE),
+            actionButton(ns("run"), "Compute", class = "btn-primary")
+        ),
+        mainPanel(
+            plotlyOutput(ns("gene_plots"), height = 600, width = 800)
+        )
     )
 }
-
 sitexplorerServer <- function(id) {
     moduleServer(id, function(input, output, session) {
 
@@ -134,6 +142,13 @@ sitexplorerServer <- function(id) {
         names(ratios_list) = names(expected_rates_list) = names(metadata_list) = tissues
         tissue_genes = lapply(boostDM_list, \(x) x[["gene_name"]] |> unique())
 
+        expected_rates <- rbindlist(expected_rates_list, idcol = "tissue", use.names = TRUE) |>
+            select(-coverage) |>
+            left_join(metadata |> select(-coverage, -sensitivity))
+
+        metadata = rbindlist(metadata_list, idcol = "tissue", use.names = TRUE)
+        ratios = rbindlist(ratios_list, idcol = "tissue")
+
         plots <- eventReactive(input$run, {
 
             select_tissue <- input$tissue
@@ -146,52 +161,31 @@ sitexplorerServer <- function(id) {
 
             select_gene <- input$gene_name
             cancer_bDM <- boostDM_list[[select_tissue]]
-            metadata <- metadata_list[[select_tissue]]
-            ratios <- ratios_list[[select_tissue]]
-            expected_rates <- expected_rates_list[[select_tissue]]
 
-            colors <- tissue_colors[[select_tissue]]
-            ratio_gene <- ratios |> filter(gene_name == select_gene)
 
-            ncells_tissue <- tissue_ncells_ci |> filter(tissue %in% select_tissue)
-            ncells <- ncells_tissue[["mid_estimate"]]
+        # check if can be made faster using data.table
+        boostDM_list[[select_tissue]] = boostDM_list[[select_tissue]] |>
+                filter(driver %in% c(TRUE, FALSE))
 
-            if (!exposed_conditions) {
-                expected_rates <- expected_rates |> filter(category %in% c("normal", "non-smoker"))
-                metadata <- metadata |> filter(category %in% c("normal", "non-smoker"))
-            }
+        barplot_mutrisk = make_gene_barplot(boostdm = boostDM_list[[select_tissue]], ratios = ratios, tissue_select = select_tissue,
+                              gene_of_interest = select_gene, tissue_name = select_tissue, category_select = "normal", lollipop_dots = TRUE)
 
-            gene_counts_boostdm <- cancer_bDM[gene_name == select_gene & driver == TRUE, .N, by = c("gene_name", "mut_type",  "driver")]
+        if (input$split_by_driver == TRUE ){
+            barplot_mutrisk = barplot_mutrisk +
+                ggh4x::facet_grid2(driver ~ ., strip  = strip_themed(background_y = elem_list_rect(fill = c("#C03830", "#707071")),
+                                                                    text_y = elem_list_text(colour = c("white"), face = "bold")))
+        }
 
-            gene_single_driver <- expected_rates |>
-                left_join(ratio_gene, by = "category") |>
-                left_join(metadata, by = c("sampleID", "category", "coverage")) |>
-                inner_join(gene_counts_boostdm |> filter(driver), by = "mut_type", relationship = "many-to-many") |>
-                mutate(across(c(mle, cilow, cihigh), ~ . * N * ratio)) |>
-                group_by(category, donor, age,  mut_type) |>
-                summarize(across(c(mle, cilow, cihigh), mean), .groups = "drop_last") |>
-                summarize(across(c(mle, cilow, cihigh), sum))
 
-            gene_single_mut_plot <- gene_single_driver |>
-                mutate(across(c(mle, cilow, cihigh), ~ . * ncells)) |>
-                ggplot(aes(x = age, y = mle, color = category)) +
-                geom_pointrange(aes(ymin = cilow, ymax = cihigh)) +
-                scale_y_continuous(labels = scales::label_comma()) +
-                theme_cowplot() +
-                scale_color_manual(values = colors) +
-                labs(y = 'number of cells with gene single mutations', x = "Age (years)", title = paste0(select_gene, " Cells with driver mutation"))
+        # add in option to split by drivers
 
-            plotly::ggplotly(gene_single_mut_plot) %>% config(displayModeBar = FALSE)
+           plotly::ggplotly(barplot_mutrisk) %>% config(displayModeBar = FALSE)
         }, ignoreInit = TRUE)
 
 
+        output$gene_plots <- renderPlotly(plots())
 
 
-
-
-        output$result <- renderText({
-            paste("You chose number:", input$num)
-        })
     })
 }
 
@@ -221,7 +215,7 @@ tab2Server <- function(id) {
 ui <- navbarPage(
     "MutRisk Explorer",
     tabPanel("Mutated cells/gene during aging", geneExplorerUI("Mutated cells/gene during aging")),
-    tabPanel("Mutated cells/position across genes", sitexplorerUI("tab1")),
+    tabPanel("Mutated cells/position across genes", sitexplorerUI("Mutated cells/position across genes")),
     tabPanel("About", h3("About"),
              p("Developed by Axel Rosendahl Huber at IRB Barcelona.\n
              For more information visit the", tags$a(href = "https://bbglab.irbbarcelona.org/", target = "_blank", "BBGLab website")))
