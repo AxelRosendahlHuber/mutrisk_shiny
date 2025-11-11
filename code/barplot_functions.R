@@ -1,5 +1,5 @@
 
-merge_mutrisk_drivers = function(boostdm, ratios, gene_of_interest, tissue_select = "colon", tissue_name,
+merge_mutrisk_drivers = function(expected_rates, boostdm, ratios, metadata, gene_of_interest, tissue_select = "colon", tissue_name,
                                  category_select = "normal", cell_probabilities = FALSE,
                                  individual = FALSE, older_individuals = TRUE) {
 
@@ -61,7 +61,7 @@ merge_mutrisk_drivers = function(boostdm, ratios, gene_of_interest, tissue_selec
 
 
 
-make_gene_barplot = function(boostdm, ratios, gene_of_interest,
+make_gene_barplot = function(expected_rates, boostdm, ratios, metadata, gene_of_interest,
                              tissue_select = "colon", tissue_name = NULL,
                              category_select = "normal",
                              cell_probabilities = FALSE, individual = FALSE, older_individuals = TRUE,
@@ -69,7 +69,8 @@ make_gene_barplot = function(boostdm, ratios, gene_of_interest,
 
   if (is.null(tissue_name)) {tissue_name = tissue_select}
 
-  mr_drivers = merge_mutrisk_drivers(boostdm, ratios, gene_of_interest, tissue_select, tissue_name, category_select, cell_probabilities,
+  mr_drivers = merge_mutrisk_drivers(expected_rates, boostdm, ratios, metadata,
+                                     gene_of_interest, tissue_select, tissue_name, category_select, cell_probabilities,
                                      individual, older_individuals)
 
   expected_gene_muts = mr_drivers$expected_gene_muts
@@ -93,6 +94,11 @@ make_gene_barplot = function(boostdm, ratios, gene_of_interest,
   expected_gene_muts_label = left_join(expected_gene_muts, mutrisk:::triplet_match_substmodel)
   expected_gene_muts_label = expected_gene_muts_label |>
     filter(!is.na(driver))
+
+  expected_gene_muts_label = expected_gene_muts_label |>
+    mutate(driver = ifelse(driver, "driver mutations", "non-driver\n mutation"))
+
+
   # way to make the plot extend both upper and lower axes
   pl = ggplot(expected_gene_muts_label,
               aes(x = position, y = mle)) +
@@ -101,7 +107,8 @@ make_gene_barplot = function(boostdm, ratios, gene_of_interest,
     theme_cowplot() +
     scale_y_continuous(expand = expansion(mult = c(0, 0.1)), labels = label_comma()) +
     scale_x_continuous(expand = expansion(mult = c(0.01,0.01))) +
-    labs(x = x_label, y = y_label, title = gene_of_interest, subtitle = label, fill = NULL)
+    labs(x = x_label, y = y_label, title = gene_of_interest, subtitle = label, fill = NULL) +
+    theme(legend.position = "bottom")
 
   if (cell_probabilities == TRUE) {
     pl = pl + scale_y_continuous(expand = expansion(mult = c(0, 0.1)), labels = function(x) x * 1e6)

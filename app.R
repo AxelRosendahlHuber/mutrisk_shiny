@@ -16,8 +16,8 @@ geneExplorerUI <- function(id) {
     ns <- NS(id)
     sidebarLayout(
         sidebarPanel(
-            selectInput(ns("tissue"), "Tissue", choices = c("colon", "blood", "lung"), selected = "colon"),
-            selectInput(ns("gene_name"), "Gene", choices = c("TP53", "KRAS")),
+            selectInput(inputId = ns("tissue"), "Tissue", choices = c("colon", "blood", "lung"), selected = "colon"),
+            selectInput(inputId = ns("gene_name"), "Gene", choices = c("TP53", "KRAS")),
             checkboxInput(ns("exposed_conditions"), "Include exposed conditions", value = FALSE),
             actionButton(ns("run"), "Compute", class = "btn-primary")
         ),
@@ -29,6 +29,7 @@ geneExplorerUI <- function(id) {
 
 geneExplorerServer <- function(id) {
     moduleServer(id, function(input, output, session) {
+        ns = session$ns
 
         boostDM_list = list(
             "colon" = fread("processed_data/colon_boostDM_cancer.txt.gz"),
@@ -48,16 +49,30 @@ geneExplorerServer <- function(id) {
         names(ratios_list) = names(expected_rates_list) = names(metadata_list) = tissues
         tissue_genes = lapply(boostDM_list, \(x) x[["gene_name"]] |> unique())
 
+
+        observeEvent(input$tissue, {
+            select_tissue = input$tissue
+            choices = tissue_genes[[select_tissue]]
+            cat("tissue changed to:", input$tissue, "\n")
+
+            updateSelectInput(session = session, inputId = ns("gene_name"), choices = choices, selected = choices[1])
+            cat("Choices vector:", head(choices), "\n")
+
+            session$onFlushed(function() {
+                updateSelectInput(session, ns("gene_name"),
+                                  choices = choices,
+                                  selected = choices[1])
+            }, once = TRUE)
+
+
+
+        }, ignoreInit = FALSE)
+
+
         plots <- eventReactive(input$run, {
 
             select_tissue <- input$tissue
             exposed_conditions <- input$exposed_conditions
-
-            observe({
-                select_tissue = input$tissue
-                choices = tissue_genes[[select_tissue]]
-                updateSelectInput(inputId = "gene_name", choices = choices, selected = choices[1])
-            })
 
             select_gene <- input$gene_name
             cancer_bDM <- boostDM_list[[select_tissue]]
@@ -123,6 +138,7 @@ sitexplorerUI <- function(id) {
 }
 sitexplorerServer <- function(id) {
     moduleServer(id, function(input, output, session) {
+        ns <- session$ns
 
        boostDM_list = list(
           "colon" = fread("processed_data/colon_boostDM_cancer.txt.gz"),
@@ -144,34 +160,34 @@ sitexplorerServer <- function(id) {
         metadata = rbindlist(metadata_list, idcol = "tissue", use.names = TRUE)
         ratios = rbindlist(ratios_list, idcol = "tissue")
 
-        expected_rates <- rbindlist(expected_rates_list, idcol = "tissue", use.names = TRUE) |>
+        expected_rates = rbindlist(expected_rates_list, idcol = "tissue", use.names = TRUE) |>
             select(-coverage) |>
             left_join(metadata |> select(-coverage, -sensitivity))
 
+        observeEvent(input$tissue, {
+            select_tissue <- input$tissue
+            choices <- tissue_genes[[select_tissue]]
+            updateSelectInput(session, inputId = ns("gene_name"), label = "Gene",
+                              choices = choices, selected = choices[1])
+        })
+
+        observeEvent(input$tissue, {
+            select_tissue = input$tissue
+            choices = unique(metadata[tissue %in% select_tissue][["category"]])
+            updateSelectInput(session = session, inputId = ns("condition"), label = "Condition",
+                              choices = choices, selected = choices[1])
+        })
 
         plots <- eventReactive(input$run, {
 
-            observe({
-                select_tissue = input$tissue
-                choices = unique(metadata[tissue == select_tissue][["category"]])
-                updateSelectInput(session = session, inputId = "condition", choices = choices, selected = choices[1])
-            })
-
-
-            observe({
-                select_tissue = input$tissue
-                choices = tissue_genes[[select_tissue]]
-                updateSelectInput(session = session, inputId = "gene_name", choices = choices, selected = choices[1])
-            })
-
-
-            condition <- input$condition
             select_gene <- input$gene_name
+            select_tissue = input$tissue
             cancer_bDM <- boostDM_list[[select_tissue]]
             category_select = input$condition
 
 
-        barplot_mutrisk = make_gene_barplot(boostdm = boostDM_list[[select_tissue]], ratios = ratios, tissue_select = select_tissue,
+        barplot_mutrisk = make_gene_barplot(expected_rates = expected_rates,
+                                            boostdm = boostDM_list[[select_tissue]], ratios = ratios, tissue_select = select_tissue,
                               gene_of_interest = select_gene, tissue_name = select_tissue, category_select = category_select, lollipop_dots = TRUE)
 
         if (input$split_by_driver == TRUE ){
@@ -182,7 +198,6 @@ sitexplorerServer <- function(id) {
 
 
         # add in option to split by drivers
-
            plotly::ggplotly(barplot_mutrisk) %>% config(displayModeBar = FALSE)
         }, ignoreInit = TRUE)
 
@@ -199,8 +214,8 @@ sitexplorerServer <- function(id) {
 # --------------------
 ui <- navbarPage(
     title = "MutRisk Explorer",
-    tabPanel("Mutated cells/gene during aging", geneExplorerUI("Mutated cells/gene during aging")),
-    tabPanel("Mutated cells/position across genes", sitexplorerUI("Mutated cells/position across genes")),
+    tabPanel("Mutated cells per gene during aging", geneExplorerUI("geneExplorer")),
+    tabPanel("Mutated cells per position across genes", sitexplorerUI("sitexplorer")),
     tabPanel("About", h3("About"),
              p("Developed by Axel Rosendahl Huber at IRB Barcelona.\n
              For more information visit the", tags$a(href = "https://bbglab.irbbarcelona.org/", target = "_blank", "BBGLab website")))
@@ -210,9 +225,8 @@ ui <- navbarPage(
 # Server
 # --------------------
 server <- function(input, output, session) {
-    geneExplorerServer("Mutated cells/gene during aging")
-    sitexplorerServer("Mutated cells/position across genes")
-    tab2Server("tab2") # TODO _ this could be removed if no other tabs are added.
+    geneExplorerServer("geneExplorer")
+    sitexplorerServer("sitexplorer")
 }
 
 # --------------------
