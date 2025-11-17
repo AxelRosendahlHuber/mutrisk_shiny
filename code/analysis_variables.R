@@ -34,4 +34,7 @@ color_df = lapply(tissue_colors, \(x)
   data.table::rbindlist(idcol = "tissue") |>
   dplyr::mutate(tissue_category = paste0(tissue, "_", category))
 tissue_category_colors = setNames(color_df$color, color_df$tissue_category)
+COLORS6 = c("#2EBAED", "#000000", "#DE1C14", "#D4D2D2", "#ADCC54", "#F0D0CE")
+
+load("processed_data/triplet_match_substmodel.rda")
 

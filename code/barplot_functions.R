@@ -91,7 +91,7 @@ make_gene_barplot = function(expected_rates, boostdm, ratios, metadata, gene_of_
     x_label = "AA position (5AA bins)"
   } else { x_label = "AA position"}
 
-  expected_gene_muts_label = left_join(expected_gene_muts, mutrisk:::triplet_match_substmodel)
+  expected_gene_muts_label = left_join(expected_gene_muts, triplet_match_substmodel)
   expected_gene_muts_label = expected_gene_muts_label |>
     filter(!is.na(driver))
 
@@ -103,7 +103,7 @@ make_gene_barplot = function(expected_rates, boostdm, ratios, metadata, gene_of_
   pl = ggplot(expected_gene_muts_label,
               aes(x = position, y = mle)) +
     geom_col(aes(fill = type)) +
-    scale_fill_manual(values = mutrisk::COLORS6) +
+    scale_fill_manual(values = COLORS6) +
     theme_cowplot() +
     scale_y_continuous(expand = expansion(mult = c(0, 0.1)), labels = label_comma()) +
     scale_x_continuous(expand = expansion(mult = c(0.01,0.01))) +
