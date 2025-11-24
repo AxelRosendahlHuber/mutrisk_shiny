@@ -10,6 +10,43 @@ library(ggh4x)
 source("code/analysis_variables.R")
 source("code/barplot_functions.R")
 
+# ==================================
+# 1. Global Data Loading
+# ==================================
+
+# --- Load boostDM data ONCE
+boostDM_list <- list(
+    "colon" = fread("processed_data/colon_boostDM_cancer.txt.gz"),
+    "lung"  = fread("processed_data/lung_boostDM_cancer.txt.gz"),
+    "blood"  = fread("processed_data/CH_boostDM_cancer.txt.gz")
+)
+tissues <- names(boostDM_list)
+tissue_genes <- lapply(boostDM_list, \(x) unique(x$gene_name))
+
+# --- Load metadata, expected_rates, and ratios ONCE
+metadata_list  <- lapply(tissues, \(x)
+                         fread(paste0("processed_data/", x, "_metadata.tsv")) |> distinct())
+expected_rates_list <- lapply(tissues, \(x)
+                              fread(paste0("processed_data/", x, "_expected_rates.tsv.gz")))
+ratios_list <- lapply(tissues, \(x)
+                      fread(paste0("processed_data/",  x, "_mut_ratios.tsv.gz")))
+names(ratios_list) = names(expected_rates_list) = names(metadata_list) = tissues
+
+# Combined tables for sitexplorer ONCE
+metadata = data.table::rbindlist(metadata_list, idcol = "tissue", use.names = TRUE)
+ratios = data.table::rbindlist(ratios_list, idcol = "tissue")
+expected_rates = data.table::rbindlist(expected_rates_list, idcol = "tissue", use.names = TRUE) |>
+    dplyr::select(-coverage) |>
+    dplyr::left_join(metadata |> dplyr::select(-coverage, -sensitivity), by = dplyr::join_by(tissue, sampleID, category))
+
+
+# Setkeys for faster data loading
+setkey(boostDM_list$colon, gene_name)
+setkey(boostDM_list$lung, gene_name)
+setkey(boostDM_list$blood, gene_name)
+setkey(expected_rates, tissue, category)
+
+
 # --------------------
 # Gene Explorer Module
 # --------------------
@@ -33,15 +70,6 @@ geneExplorerServer <- function(id) {
     moduleServer(id, function(input, output, session) {
         ns <- session$ns
 
-        # --- Load data
-        boostDM_list <- list(
-            "colon" = fread("processed_data/colon_boostDM_cancer.txt.gz"),
-            "lung"   = fread("processed_data/lung_boostDM_cancer.txt.gz"),
-            "blood"  = fread("processed_data/CH_boostDM_cancer.txt.gz")
-        )
-        tissues <- names(boostDM_list)
-        tissue_genes <- lapply(boostDM_list, \(x) unique(x$gene_name))
-
         # --- Dynamic gene select input
         output$gene_select_ui <- renderUI({
             sel_tissue <- ifelse(is.null(input$tissue), "colon", input$tissue)
@@ -57,15 +85,7 @@ geneExplorerServer <- function(id) {
             )
         })
 
-        metadata_list  <- lapply(tissues, \(x)
-                                 fread(paste0("processed_data/", x, "_metadata.tsv")) |> distinct())
-        expected_rates_list <- lapply(tissues, \(x)
-                                      fread(paste0("processed_data/", x, "_expected_rates.tsv.gz")))
-        ratios_list <-  lapply(tissues, \(x)
-                               fread(paste0("processed_data/",  x, "_mut_ratios.tsv.gz")))
-        names(ratios_list) = names(expected_rates_list) = names(metadata_list) = tissues
-
-        # --- Plot reactive, updates with button or automatically if needed
+       # --- Plot reactive, updates with button or automatically if needed
         plot_data <- reactive({
             req(input$gene_name)  # wait for dynamic input to exist
             select_tissue <- input$tissue
@@ -90,14 +110,24 @@ geneExplorerServer <- function(id) {
             gene_counts_boostdm <- cancer_bDM[gene_name == select_gene & driver == TRUE,
                                               .N, by = c("gene_name", "mut_type", "driver")]
 
-            gene_single_driver <- expected_rates |>
-                left_join(ratio_gene, by = "category") |>
-                left_join(metadata, by = c("sampleID", "category", "coverage")) |>
-                inner_join(gene_counts_boostdm |> filter(driver), by = "mut_type", relationship = "many-to-many") |>
-                mutate(across(c(mle, cilow, cihigh), ~ . * N * ratio)) |>
-                group_by(category, donor, age, mut_type) |>
-                summarize(across(c(mle, cilow, cihigh), mean), .groups = "drop_last") |>
-                summarize(across(c(mle, cilow, cihigh), sum))
+            # using data table syntax for speed (comments below is dplyr syntax)
+            gene_single_driver <- expected_rates[ratio_gene, on = "category"
+              ][metadata, on = c("sampleID", "category", "coverage")
+              ][gene_counts_boostdm,  on = "mut_type",  nomatch = 0, #0 = Key for Inner Join
+              ][j = list(category = category, donor = donor, age = age,
+                           mut_type = mut_type, mle = mle * N * ratio,
+                         cilow = cilow * N * ratio, cihigh = cihigh * N * ratio)
+               ][, lapply(.SD, mean),.SDcols = c("mle", "cilow", "cihigh"),by = .(category, donor, age, mut_type)][
+                    , lapply(.SD, sum),  .SDcols = c("mle", "cilow", "cihigh"),  by = .(category, donor, age)]
+
+            # gene_single_driver <- expected_rates |>
+            #     left_join(ratio_gene, by = "category") |>
+            #     left_join(metadata, by = c("sampleID", "category", "coverage")) |>
+            #     inner_join(gene_counts_boostdm |> filter(driver), by = "mut_type", relationship = "many-to-many") |>
+            #     mutate(across(c(mle, cilow, cihigh), ~ . * N * ratio)) |>
+            #     group_by(category, donor, age, mut_type) |>
+            #     summarize(across(c(mle, cilow, cihigh), mean), .groups = "drop_last") |>
+            #     summarize(across(c(mle, cilow, cihigh), sum))
 
             gene_single_mut_plot <- gene_single_driver |>
                 mutate(across(c(mle, cilow, cihigh), ~ . * ncells)) |>
@@ -148,26 +178,26 @@ sitexplorerServer <- function(id) {
     moduleServer(id, function(input, output, session) {
         ns <- session$ns
 
-        # --- Load data
-        boostDM_list <- list(
-            "colon" = fread("processed_data/colon_boostDM_cancer.txt.gz"),
-            "lung"   = fread("processed_data/lung_boostDM_cancer.txt.gz"),
-            "blood"  = fread("processed_data/CH_boostDM_cancer.txt.gz")
-        )
-        tissues <- names(boostDM_list)
-        tissue_genes <- lapply(boostDM_list, \(x) unique(x$gene_name))
-
-        metadata_list  <- lapply(tissues, \(x) fread(paste0("processed_data/", x, "_metadata.tsv")) |> distinct())
-        expected_rates_list <- lapply(tissues, \(x) fread(paste0("processed_data/", x, "_expected_rates.tsv.gz")))
-        ratios_list <-  lapply(tissues, \(x) fread(paste0("processed_data/",  x, "_mut_ratios.tsv.gz")))
-
-        names(ratios_list) = names(expected_rates_list) = names(metadata_list) = tissues
-        metadata = rbindlist(metadata_list, idcol = "tissue", use.names = TRUE)
-        ratios = rbindlist(ratios_list, idcol = "tissue")
-
-        expected_rates = rbindlist(expected_rates_list, idcol = "tissue", use.names = TRUE) |>
-            select(-coverage) |>
-            left_join(metadata |> select(-coverage, -sensitivity), by = join_by(tissue, sampleID, category))
+        # # --- Load data
+        # boostDM_list <- list(
+        #     "colon" = fread("processed_data/colon_boostDM_cancer.txt.gz"),
+        #     "lung"   = fread("processed_data/lung_boostDM_cancer.txt.gz"),
+        #     "blood"  = fread("processed_data/CH_boostDM_cancer.txt.gz")
+        # )
+        # tissues <- names(boostDM_list)
+        # tissue_genes <- lapply(boostDM_list, \(x) unique(x$gene_name))
+        #
+        # metadata_list  <- lapply(tissues, \(x) fread(paste0("processed_data/", x, "_metadata.tsv")) |> distinct())
+        # expected_rates_list <- lapply(tissues, \(x) fread(paste0("processed_data/", x, "_expected_rates.tsv.gz")))
+        # ratios_list <-  lapply(tissues, \(x) fread(paste0("processed_data/",  x, "_mut_ratios.tsv.gz")))
+        #
+        # names(ratios_list) = names(expected_rates_list) = names(metadata_list) = tissues
+        # metadata = rbindlist(metadata_list, idcol = "tissue", use.names = TRUE)
+        # ratios = rbindlist(ratios_list, idcol = "tissue")
+        #
+        # expected_rates = rbindlist(expected_rates_list, idcol = "tissue", use.names = TRUE) |>
+        #     select(-coverage) |>
+        #     left_join(metadata |> select(-coverage, -sensitivity), by = join_by(tissue, sampleID, category))
 
         # --- Dynamic gene select
         output$gene_select_ui <- renderUI({
@@ -206,10 +236,7 @@ sitexplorerServer <- function(id) {
 
             if (input$split_by_driver) {
                 barplot_mutrisk <- barplot_mutrisk +
-                    ggh4x::facet_grid2(driver ~ ., strip = strip_themed(
-                        background_y = elem_list_rect(fill = c("#C03830", "#707071")),
-                        text_y = elem_list_text(colour = c("white"), face = "bold")
-                    ))
+                    facet_grid(driver ~ .)
             }
 
             plotly::ggplotly(barplot_mutrisk) %>% config(displayModeBar = FALSE)
