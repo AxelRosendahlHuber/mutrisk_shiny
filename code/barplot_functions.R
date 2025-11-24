@@ -3,16 +3,13 @@ merge_mutrisk_drivers = function(expected_rates, boostdm, ratios, metadata, gene
                                  category_select = "normal", cell_probabilities = FALSE,
                                  individual = FALSE, older_individuals = TRUE) {
 
-  older_individuals = metadata |> filter(tissue == tissue_select,
-                                         category %in% category_select,
-                                         age > 30)
-  ratio_gene_tissue = ratios |> filter(gene_name == gene_of_interest &
-                                         category %in% category_select,
-                                       tissue == tissue_select) |> pull(ratio)
+  older_individuals = metadata[tissue == tissue_select & category %in% category_select & age > 30, ]
+  ratio_gene_tissue = ratios[gene_name == gene_of_interest & category %in% category_select & tissue == tissue_select][["ratio"]]
   expected_rates_select = expected_rates[category %in% category_select &
-                                           tissue == tissue_select, ] |>
-    left_join(older_individuals, by = c("tissue", "sampleID", "category", "donor")) |>
-    filter(donor %in% older_individuals$donor)
+                                           tissue == tissue_select &
+                                           donor %in% unique(older_individuals$donor),][
+    older_individuals, on = c("tissue", "sampleID", "category", "donor")]
+
 
   ncells_select = tissue_ncells_ci[tissue_ncells_ci$tissue == tissue_select, "mid_estimate"]
 
@@ -20,22 +17,25 @@ merge_mutrisk_drivers = function(expected_rates, boostdm, ratios, metadata, gene
     ncells_select = 1
   }
 
-  # group by donor individually
-  mutated_rates = expected_rates_select |>
-    group_by(donor, mut_type, tissue) |>
-    summarize(across(c(mle, cilow, cihigh), mean), .groups = "drop") |>
-    mutate(across(c(mle, cilow, cihigh), ~ . * ratio_gene_tissue * ncells_select))
+  # group by donor individually (dplyr code below)
+  mutated_rates = expected_rates_select[, lapply(.SD, mean), by = .(donor, mut_type, tissue),
+                                            .SDcols = c("mle", "cilow", "cihigh")
+                                            ][ ,c("mle", "cilow", "cihigh") := lapply(.SD, function(x) x * ratio_gene_tissue * ncells_select),
+                                               .SDcols = c("mle", "cilow", "cihigh")]
+
+  # mutated_rates = expected_rates_select |>
+  #   group_by(donor, mut_type, tissue) |>
+  #   summarize(across(c(mle, cilow, cihigh), mean), .groups = "drop") |>
+  #   mutate(across(c(mle, cilow, cihigh), ~ . * ratio_gene_tissue * ncells_select))
+
+
 
   # modify for specific individual, or for the entiriety
   if (individual == FALSE) {
     print("taking mean of the mutation rates")
 
-    mutated_rates_select = mutated_rates |>
-      group_by(mut_type, tissue) |>
-      summarize(mle = mean(mle))
-
-    individuals = older_individuals |>
-      select(donor, age) |> distinct()
+    mutated_rates_select = mutated_rates[ , .(mle = mean(mle)), by = .(mut_type, tissue)]
+    individuals = distinct(older_individuals[ , .(donor, age)])
 
     label = paste(tissue_name, "- average age:", format(mean(individuals$age), digits = 3))
 
@@ -55,6 +55,15 @@ merge_mutrisk_drivers = function(expected_rates, boostdm, ratios, metadata, gene
   boostdM_goi = boostdm[gene_name == gene_of_interest, c("mut_type", "position", "driver")]
   expected_gene_muts = boostdM_goi |>
     full_join(mutated_rates_select, relationship = "many-to-many", by = "mut_type")
+
+  # expected_gene_muts = merge(
+  #   boostdM_goi,
+  #   mutated_rates_select,
+  #   by = "mut_type",
+  #   all = TRUE,         # This specifies a full outer join
+  #   allow.cartesian = TRUE # Allows many-to-many joins
+  # )
+  #
 
   return(list(expected_gene_muts = expected_gene_muts, label = label))
 }
@@ -91,7 +100,7 @@ make_gene_barplot = function(expected_rates, boostdm, ratios, metadata, gene_of_
     x_label = "AA position (5AA bins)"
   } else { x_label = "AA position"}
 
-  expected_gene_muts_label = left_join(expected_gene_muts, triplet_match_substmodel)
+  expected_gene_muts_label = left_join(expected_gene_muts, triplet_match_substmodel, by = "mut_type")
   expected_gene_muts_label = expected_gene_muts_label |>
     filter(!is.na(driver))
 
